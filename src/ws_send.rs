@@ -28,6 +28,7 @@ pub const MAX_QUEUE_WAIT: Duration = Duration::from_millis(100);
 /// Unknown -- it may have gone out -- and the caller resends over REST.
 const APP_PONG: &str = r#"{"type":"pong"}"#;
 const REPLY_SLACK: Duration = Duration::from_millis(250);
+static NEXT_REQUEST_ID: AtomicU64 = AtomicU64::new(1);
 const BACKOFF: [u64; 5] = [1, 2, 5, 10, 30];
 
 #[derive(Debug, Clone, PartialEq)]
@@ -98,6 +99,7 @@ fn is_conclusive(answer: &Value, expected_hash: Option<&str>) -> bool {
 
 struct Job {
     frame: String,
+    request_id: String,
     expected_hash: Option<String>,
     reply: oneshot::Sender<Outcome>,
     queued: Instant,
@@ -174,14 +176,16 @@ impl WsSender {
             Ok(v) => v,
             Err(e) => return Outcome::NotSent(format!("tx_info is not JSON: {e}")),
         };
+        let request_id = NEXT_REQUEST_ID.fetch_add(1, Ordering::Relaxed).to_string();
         let frame = json!({"type": "jsonapi/sendtx",
-                           "data": {"tx_type": tx_type, "tx_info": info}})
+                           "data": {"id": request_id, "tx_type": tx_type, "tx_info": info}})
         .to_string();
         let (reply, rx) = oneshot::channel();
         if self
             .jobs
             .send(Job {
                 frame,
+                request_id,
                 expected_hash: expected_hash.map(str::to_owned),
                 reply,
                 queued: Instant::now(),
@@ -319,6 +323,17 @@ async fn serve(
                                         continue;
                                     }
                                     if let Some(answer) = answer_of(&frame) {
+                                        let id = [&frame["id"], &frame["data"]["id"], &frame["error"]["id"]]
+                                            .into_iter()
+                                            .find(|id| !id.is_null());
+                                        let matched_id = id.and_then(Value::as_str) == Some(job.request_id.as_str());
+                                        if id.is_some() && !matched_id {
+                                            continue;
+                                        }
+                                        // A bare error can concern the connection rather than this order.
+                                        if !matched_id && frame["type"] != "jsonapi/sendtx" {
+                                            continue;
+                                        }
                                         if !is_conclusive(&answer, job.expected_hash.as_deref()) {
                                             let reason = "ambiguous WebSocket acknowledgment";
                                             let _ = job.reply.send(Outcome::Unknown(reason.into()));
@@ -528,10 +543,10 @@ mod tests {
             Outcome::Answered(json!({"code": 200, "message": "", "tx_hash": "h1"}))
         );
         let sent: Value = serde_json::from_str(&got.lock().unwrap()[0]).unwrap();
-        assert_eq!(
-            sent,
-            json!({"type": "jsonapi/sendtx", "data": {"tx_type": 14, "tx_info": {"Nonce": 7}}})
-        );
+        assert_eq!(sent["type"], "jsonapi/sendtx");
+        assert!(sent["data"]["id"].as_str().is_some_and(|id| !id.is_empty()));
+        assert_eq!(sent["data"]["tx_type"], 14);
+        assert_eq!(sent["data"]["tx_info"], json!({"Nonce": 7}));
     }
 
     #[tokio::test]
@@ -591,15 +606,24 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_bare_error_frame_answers_the_send_in_flight() {
-        let (url, _) =
-            server(|_| Some(r#"{"error":{"code":21702,"message":"invalid price"}}"#.into())).await;
+    async fn an_error_with_the_matching_request_id_rejects_the_order() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let url = format!("ws://{}", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move {
+            let (socket, _) = listener.accept().await.unwrap();
+            let mut ws = tokio_tungstenite::accept_async(socket).await.unwrap();
+            let sent = ws.next().await.unwrap().unwrap().into_text().unwrap();
+            let sent: Value = serde_json::from_str(&sent).unwrap();
+            let reply = json!({"id": sent["data"]["id"], "error": {"code": 21702, "message": "invalid price"}});
+            ws.send(Message::Text(reply.to_string())).await.unwrap();
+        });
         let s = WsSender::new(url);
         connected(&s).await;
         assert_eq!(
             s.send(14, "{}", None).await,
             Outcome::Answered(json!({"code": 21702, "message": "invalid price"}))
         );
+        server.await.unwrap();
     }
 
     #[tokio::test]
@@ -618,6 +642,7 @@ mod tests {
         s.jobs
             .send(Job {
                 frame,
+                request_id: "stale".into(),
                 expected_hash: None,
                 reply,
                 queued: Instant::now() - Duration::from_millis(150),
@@ -668,6 +693,38 @@ mod tests {
         server.await.unwrap();
     }
 
+    #[tokio::test]
+    async fn connection_error_must_not_override_matching_transaction_ack() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let url = format!("ws://{}", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move {
+            let (socket, _) = listener.accept().await.unwrap();
+            let mut ws = tokio_tungstenite::accept_async(socket).await.unwrap();
+            let request = ws.next().await.unwrap().unwrap().into_text().unwrap();
+            let request: Value = serde_json::from_str(&request).unwrap();
+            let id = request["data"]["id"].as_str().unwrap();
+            let stale = json!({"id": format!("{id}-stale"), "error": {"code": 21702, "message": "invalid price"}});
+            ws.send(Message::Text(stale.to_string())).await.unwrap();
+            ws.send(Message::Text(
+                r#"{"error":{"code":23000,"message":"Too Many Requests"}}"#.into(),
+            ))
+            .await
+            .unwrap();
+            ws.send(Message::Text(
+                r#"{"type":"jsonapi/sendtx","code":200,"tx_hash":"abc"}"#.into(),
+            ))
+            .await
+            .unwrap();
+        });
+        let sender = WsSender::new(url);
+        connected(&sender).await;
+        let outcome = sender.send(14, "{}", Some("abc")).await;
+        server.await.unwrap();
+        assert!(
+            matches!(outcome, Outcome::Answered(ref reply) if reply["tx_hash"] == "abc"),
+            "matching order acknowledgment was superseded by {outcome:?}"
+        );
+    }
     #[tokio::test]
     async fn a_quiet_socket_is_pinged() {
         // The server never sends anything after the hello; the client must

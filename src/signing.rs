@@ -313,7 +313,7 @@ mod tests {
             reduce_only: true,
             client_order_index: 123,
         };
-        // These hashes come from lighter-go v1.0.2's Hash(chainID) on the same fields.
+        // These hashes come from lighter-go v1.0.12's Hash(chainID) on the same fields.
         let main_hashes = [
             "abfec0679277db8b097dca4900a4843402326dd781937dc060d40ac0c938b343887d9deae83bf65c",
             "44a1e4afecc22d15fa9ea97d40f2a6ffc45e3438a102303b08e2a100d46f291d79787d9268f240f8",

@@ -7,7 +7,8 @@ use tokio::sync::Mutex;
 use crate::{Error, LimitOrder, SignedTransaction, Signer};
 
 const HTTP_TIMEOUT: Duration = Duration::from_secs(5);
-const TRANSACTION_TTL_MS: i64 = 600_000;
+// Match the Go SDK's ten-minute default with a one-second clock margin.
+const TRANSACTION_TTL_MS: i64 = 599_000;
 
 /// The transport that returned an acknowledgment.
 #[non_exhaustive]
@@ -103,10 +104,12 @@ impl Client {
     }
 
     /// Allow submissions again after checking the uncertain transaction at the venue.
-    /// Returns false if this nonce is no longer the one awaiting reconciliation.
-    pub async fn resume_after_reconciliation(&self, nonce: i64) -> bool {
+    /// Returns false if this transaction is no longer the one awaiting reconciliation.
+    pub async fn resume_after_reconciliation(&self, nonce: i64, tx_hash: &str) -> bool {
         let mut state = self.nonce.lock().await;
-        if matches!(*state, NonceState::Unresolved { nonce: pending, .. } if pending == nonce) {
+        if matches!(&*state, NonceState::Unresolved { nonce: pending, tx_hash: hash }
+            if *pending == nonce && hashes_match(tx_hash, hash))
+        {
             *state = NonceState::Cold;
             true
         } else {
@@ -466,16 +469,18 @@ mod tests {
             Some(json!({"code": 200, "tx_hash": "matching"})),
         ])
         .await;
-        assert!(matches!(
-            client.place_order(&ORDER).await,
-            Err(Error::Unknown { nonce: 21, .. })
-        ));
+        let Err(Error::Unknown {
+            nonce: 21, tx_hash, ..
+        }) = client.place_order(&ORDER).await
+        else {
+            panic!("expected unresolved submission");
+        };
         assert!(matches!(
             client.cancel_all().await,
             Err(Error::UnresolvedNonce { nonce: 21, .. })
         ));
-        assert!(!client.resume_after_reconciliation(22).await);
-        assert!(client.resume_after_reconciliation(21).await);
+        assert!(!client.resume_after_reconciliation(22, &tx_hash).await);
+        assert!(client.resume_after_reconciliation(21, &tx_hash).await);
         assert_eq!(client.cancel_all().await.unwrap().nonce, 22);
         let requests = requests.await.unwrap();
         assert_eq!(requests[1].signed_payload()["Nonce"], 21);
@@ -503,6 +508,44 @@ mod tests {
             other => panic!("{other}"),
         }
         requests.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn stale_recovery_must_not_clear_a_different_transaction_with_the_same_nonce() {
+        let (client, requests) = http_fixture(vec![
+            Some(json!({"nonce": 21})),
+            None,
+            Some(json!({"nonce": 21})),
+            None,
+        ])
+        .await;
+        let Error::Unknown {
+            nonce, tx_hash: a, ..
+        } = client.place_order(&ORDER).await.unwrap_err()
+        else {
+            panic!("expected A to be unresolved")
+        };
+        assert!(client.resume_after_reconciliation(nonce, &a).await);
+        let order_b = LimitOrder {
+            client_order_index: 124,
+            ..ORDER
+        };
+        let Error::Unknown {
+            nonce: nonce_b,
+            tx_hash: b,
+            ..
+        } = client.place_order(&order_b).await.unwrap_err()
+        else {
+            panic!("expected B to be unresolved")
+        };
+        assert_eq!(nonce, nonce_b);
+        assert_ne!(a, b);
+        requests.await.unwrap();
+        assert!(
+            !client.resume_after_reconciliation(nonce, &a).await,
+            "A's delayed recovery cleared unresolved B despite different hashes"
+        );
+        assert!(client.resume_after_reconciliation(nonce, &b).await);
     }
 
     #[cfg(feature = "websocket")]

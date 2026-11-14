@@ -50,7 +50,7 @@ With the `websocket` Cargo feature enabled, `Client::new(signer)?.with_websocket
 
 Share one client per network, account, and API key across tasks. Allocate separate API keys to independent writers. Each client sends its transactions sequentially and caches the next nonce after an acknowledgment.
 
-A WebSocket submission with no conclusive reply is replayed over REST with the same signed transaction and nonce. If the outcome remains unclear, the client reports `Error::Unknown` and holds subsequent operations on that key. Use the transaction hash from the error to reconcile against the venue before calling `resume_after_reconciliation(nonce)`. Cancelling a submission future can leave the same unresolved state. Keep track of your client order indices to reconcile uncertain results.
+A WebSocket submission with no conclusive reply is replayed over REST with the same signed transaction and nonce. If the outcome remains unclear, the client reports `Error::Unknown` and holds subsequent operations on that key. Use the transaction hash from the error to reconcile against the venue before calling `resume_after_reconciliation(nonce, &tx_hash)`. Cancelling a submission future can leave the same unresolved state. Keep track of your client order indices to reconcile uncertain results.
 
 ## Verification
 
