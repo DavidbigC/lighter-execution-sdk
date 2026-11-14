@@ -1,0 +1,31 @@
+[package]
+name = "lighter-execution-sdk"
+version = "0.1.0"
+edition = "2021"
+description = "Rust execution client for Lighter Main and Lighter Robinhood"
+repository = "https://github.com/DavidbigC/lighter-execution-sdk"
+publish = false
+
+[features]
+default = []
+websocket = ["dep:futures-util", "dep:tokio-tungstenite", "dep:tracing", "tokio/macros", "tokio/net", "tokio/rt", "tokio/time"]
+
+[dependencies]
+base64 = "0.22"
+hex = "0.4"
+num-bigint = "0.4"
+rand = "0.8"
+reqwest = { version = "0.12.28", features = ["json"] }
+serde_json = "1"
+thiserror = "1"
+tokio = { version = "1", features = ["sync"] }
+zeroize = "1"
+futures-util = { version = "0.3", default-features = false, features = ["std", "sink"], optional = true }
+tokio-tungstenite = { version = "0.24", features = ["native-tls"], optional = true }
+tracing = { version = "0.1", optional = true }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt", "net", "io-util", "time"] }
+
+[lints.rust]
+unsafe_code = "forbid"
