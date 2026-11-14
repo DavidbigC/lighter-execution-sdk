@@ -1,6 +1,6 @@
 # Lighter Execution SDK
 
-A Rust library for signing and submitting orders on Lighter Main and Lighter Robinhood. Each client binds the REST endpoint, WebSocket endpoint, and L2 signing domain to its selected network. Orders use integer market ticks to preserve the caller's price and size.
+An unofficial Rust library for signing and submitting orders on Lighter Main and Lighter Robinhood. Each client binds the REST endpoint, WebSocket endpoint, and L2 signing domain to its selected network. Orders use integer market ticks to preserve the caller's price and size.
 
 | Network | L2 signing domain |
 | --- | ---: |
@@ -9,14 +9,12 @@ A Rust library for signing and submitting orders on Lighter Main and Lighter Rob
 
 ## Install
 
-With access to the private GitHub repository, add this to your project's `Cargo.toml`.
+Add this to your project's `Cargo.toml`.
 
 ```toml
 [dependencies]
-lighter-execution-sdk = { git = "https://github.com/DavidbigC/lighter-execution-sdk.git", tag = "v0.1.0" }
+lighter-execution-sdk = { git = "https://github.com/DavidbigC/lighter-execution-sdk.git", tag = "v0.2.0" }
 ```
-
-For a private Git dependency, use your usual GitHub credentials and set `CARGO_NET_GIT_FETCH_WITH_CLI=true` to let Cargo use your Git credential helper. GitHub Actions jobs in other repositories need credentials with read access to this repository.
 
 ## Usage
 
@@ -50,7 +48,7 @@ With the `websocket` Cargo feature enabled, `Client::new(signer)?.with_websocket
 
 Share one client per network, account, and API key across tasks. Allocate separate API keys to independent writers. Each client sends its transactions sequentially and caches the next nonce after an acknowledgment.
 
-A WebSocket submission with no conclusive reply is replayed over REST with the same signed transaction and nonce. If the outcome remains unclear, the client reports `Error::Unknown` and holds subsequent operations on that key. Use the transaction hash from the error to reconcile against the venue before calling `resume_after_reconciliation(nonce, &tx_hash)`. Cancelling a submission future can leave the same unresolved state. Keep track of your client order indices to reconcile uncertain results.
+A WebSocket submission with no conclusive reply is replayed over REST with the same signed transaction and nonce. If the outcome remains unclear, the client reports `Error::Unknown` and holds subsequent operations on that key. Use the transaction hash from the error to reconcile against the venue before calling `resume_after_reconciliation(nonce, &tx_hash)`. Version 0.2 requires both the nonce and hash so a delayed recovery call can only clear the transaction it verified. Cancelling a submission future can leave the same unresolved state. Keep track of your client order indices to reconcile uncertain results.
 
 ## Verification
 

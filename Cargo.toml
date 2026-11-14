@@ -1,6 +1,6 @@
 [package]
 name = "lighter-execution-sdk"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 description = "Rust execution client for Lighter Main and Lighter Robinhood"
 repository = "https://github.com/DavidbigC/lighter-execution-sdk"
